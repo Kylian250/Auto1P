@@ -1,0 +1,289 @@
+class Network:
+    dashboard = None
+    organizationDict = None
+    networkDict = None
+
+    # Initialisation de la class avec l'APIKEY, l'organization, le network et son modele
+    def __init__(self,apikey,organizationNAME,networkNAME,**kwargs):
+        self.dashboard = meraki.DashboardAPI(apikey)
+        self.organizationDict = next((org for org in self.dashboard.organizations.getOrganizations() if org['name'] == organizationNAME),None) # récupération de l'organisation demandée
+        self.networkDict = next((net for net in self.dashboard.organizations.getOrganizationNetworks(self.organizationDict['id'], total_pages="all") if networkNAME == net['name']),None) # récupération du network demandée
+        self.objectmodele = ModeleTemplate(os.environ["MERAKI_APIKEY"],"SODEXO - FRANCE","MODELE")
+
+    def GetNetwork(self): # On essaye de récupérer les informations d'un réseau à partir de son ID
+        try:
+            self.dashboard.networks.getNetwork(self.networkDict['id'])
+            return True
+        except:
+            return False
+
+    def ClaimDevices(self, serials): # On essaye d'ajouter une liste de serials sur le réseau
+        try:
+            self.dashboard.networks.claimNetworkDevices(self.networkDict['id'], serials=serials)
+            self.UpdateSwitchSettings() # Mise ajour de la config des switch
+        except:
+            return False
+
+    def UpdateSwitchSettings(self): # On essaye de mettre a jour la config des switchs (vlan management = 900)
+        try:
+            self.dashboard.switch.updateNetworkSwitchSettings(self.networkDict['id'],vlan=900)
+            return True
+        except:
+            return False
+
+
+    def GetStsVpn(self): # On récupère la valeur de la config site to site VPN (ne marche pas sur un template)
+        return self.dashboard.appliance.getNetworkApplianceVpnSiteToSiteVpn(self.networkDict['id'])
+
+
+    def UpdateSnmp(self): # On essaye de mettre à jour la config SNMP à partir des valeurs du MODELE
+        try:
+            self.dashboard.networks.updateNetworkSnmp(self.networkDict['id'], access = self.objectmodele.GetSnmp()['access'], users = self.objectmodele.GetSnmp()['users'])
+            return True
+        except:
+            return False
+
+
+    def UpdateSyslog(self): # On essaye de mettre à jour la config Syslog à partir des valeurs du MODELE
+        try:
+            self.dashboard.networks.updateNetworkSyslogServers(
+                self.networkDict['id'],
+                servers = self.objectmodele.GetSyslog()['servers']
+            )
+            return True
+        except:
+            return False
+
+
+    def UpdateTrafficAnalysis(self): # On essaye de mettre à jour la config Traffic Analysis à partir des valeurs du MODELE
+        try:
+            self.dashboard.networks.updateNetworkTrafficAnalysis(self.networkDict['id'],mode='detailed')
+        except:
+            return False
+
+
+    def BaseConfig(self): # On regroupe les fonction SNMP SYSLOG et TrafficAnalysis => base config
+        self.UpdateSnmp()
+        #self.UpdateSyslog() #non nécessaire
+        #self.UpdateTrafficAnalysis() #non nécessaire
+
+
+    def GetGroupPolicyByName(self,nameGP): # On essaye de récupérer une Group Policy à partir de son NOM
+        try:
+            return next((gp for gp in self.dashboard.networks.getNetworkGroupPolicies(self.networkDict['id']) if nameGP == gp['name']), None)
+        except:
+            return False
+
+    def GetVlan(self,vlan_id): # On récupère un vlan à partir de son ID
+        return self.dashboard.appliance.getNetworkApplianceVlan(self.networkDict['id'],vlan_id)
+
+    def ActiveVlan(self): # Fonction d'activation (enable) des VLANS
+        try:
+            self.dashboard.appliance.updateNetworkApplianceVlansSettings(
+                self.networkDict['id'],
+                vlansEnabled = True
+            )
+            return True
+        except:
+            return False
+
+    def DeleteVlan(self,VlanID): # Fonction de suppression d'un vlan à partir de son ID
+        try:
+            self.dashboard.appliance.deleteNetworkApplianceVlan(
+                self.networkDict['id'], 
+                vlanId=VlanID
+            )
+            return True
+        except:
+            return False
+
+    
+    def UpdateStsVpn(self,mode,hubs,subnets): # On essaye de mettre à jour la config Site to site VPN à partir des valeurs en paramètres
+        try:
+            self.dashboard.appliance.updateNetworkApplianceVpnSiteToSiteVpn(self.networkDict['id'],mode=mode,hubs=hubs,subnets=subnets)
+            return True
+        except:
+            return False
+
+
+    def AddSameVlans(self,vlans): # Fonction d'ajout de Vlans non routés
+        self.ActiveVlan() # active vlan
+        ModeleSameVlan = [vlan for vlan in self.objectmodele.vlans() if vlan['templateVlanType'] != "unique" and vlan['id'] in vlans] # on récupère les vlans non routés du MODELE
+        
+        # Parcours les vlans
+        for vlan in ModeleSameVlan:
+            # On appel la fonction UpdateGroupPolicies de la class Organization pour pousser la Group Policy du VLAN
+            Organization(os.environ["MERAKI_APIKEY"],"SODEXO - FRANCE").UpdateGroupPolicies(choice='1', idgpsource=[vlan['groupPolicyId']], network_or_tag=self.networkDict['name'])
+            
+            # On essaye de créer le vlan avec tous les paramètres 
+            try:
+                self.dashboard.appliance.createNetworkApplianceVlan(
+                    self.networkDict['id'],
+                    vlan['id'],
+                    vlan['name'],
+                    subnet=vlan['subnet'],
+                    applianceIp=vlan['applianceIp'],
+                    groupPolicyId=self.GetGroupPolicyByName(self.objectmodele.GetGroupPolicy(vlan['groupPolicyId'])['name'])['groupPolicyId'],
+                    dnsNameservers=vlan['dnsNameservers']
+                )
+            except:
+                pass
+        self.DeleteVlan(1) # on supprime le vlan 1 s'il existe
+
+
+
+    def AddVlan(self,VlanID,**kwargs): # Fonction pour ajouter 1 vlan routé 
+        VlanModele = self.objectmodele.GetVlan(VlanID) # On récupère le vlan du MODELE par son ID
+
+        # On pousse la group policy si elle existe
+        if 'groupPolicyId' in VlanModele:        
+            resultat_update = Organization(os.environ["MERAKI_APIKEY"], "SODEXO - FRANCE").UpdateGroupPolicies(choice='1', idgpsource=[VlanModele['groupPolicyId']], network_or_tag=self.networkDict['name'])
+            print(resultat_update)
+
+            Organization(os.environ["MERAKI_APIKEY"],"SODEXO - FRANCE").UpdateGroupPolicies(choice='1', idgpsource=[VlanModele['groupPolicyId']], network_or_tag=self.networkDict['name'])
+ 
+        # On recupère le cidr et le subnet parent 
+        cidr_subnet=kwargs.get('cidr_subnet',None)
+        p_subnet=kwargs.get('p_subnet',None)
+
+
+        # On ajoute sur l'IPAM le vlan #
+        if netaddr.IPNetwork(cidr_subnet).size is not None:
+            Ipam().add_subnet(
+                subnet_addr=Ipam().search_free_network(cidr_subnet,id=p_subnet), # On met en adresse la recherche d'un subnet possible dans le parent
+                subnet_name=self.networkDict['name']+" - "+VlanModele['name'],
+                subnet_size=netaddr.IPNetwork(cidr_subnet).size,
+                parent_subnet_id=p_subnet,
+                is_terminal=1
+            )
+
+        # On récupère les valeurs de ce nouveau subnet sur IPAM
+        vlan_ipam = Ipam().get_subnet(self.networkDict['name']+" - "+VlanModele['name']) #none
+
+        # On configure les valeurs pour la création du vlan sur meraki
+        applianceIp=str(ipaddress.IPv4Address(vlan_ipam[0]['start_hostaddr'])+1)
+        subnet=vlan_ipam[0]['start_hostaddr']+"/"+str(netaddr.IPNetwork(cidr_subnet).prefixlen)
+
+        try: # On essaye de créer le vlan
+            self.dashboard.appliance.createNetworkApplianceVlan(
+                self.networkDict['id'],
+                VlanID,
+                VlanModele['name'],
+                subnet=subnet,
+                applianceIp=applianceIp,
+                )
+        except:
+            pass
+
+        # On pousse la configuration "particulière" des vlans
+        if 'dhcpRelayServerIps' in VlanModele: # Si le vlan a un dhcp relay
+            self.dashboard.appliance.updateNetworkApplianceVlan(
+                self.networkDict['id'],
+                VlanID,
+                dhcpHandling = VlanModele['dhcpHandling'],
+                dhcpRelayServerIps = VlanModele['dhcpRelayServerIps']
+                )
+            # Ajout d'un pool sur DHCP Efficient
+            Ipam().add_ip_pool(subnet_name=vlan_ipam[0]['subnet_name'],start_addr=ipaddress.IPv4Address(vlan_ipam[0]['start_hostaddr'])+2,pool_size=int(vlan_ipam[0]['subnet_size'])-3)
+
+        else: # Sinon DHCP Handling
+
+            self.dashboard.appliance.updateNetworkApplianceVlan(
+                self.networkDict['id'],
+                VlanID,
+                dhcpHandling = VlanModele['dhcpHandling'],
+                )
+        if 'groupPolicyId' in VlanModele: # Si group policy alors ajout à partir du MODELE 
+            self.dashboard.appliance.updateNetworkApplianceVlan(
+                self.networkDict['id'],
+                VlanID,
+                groupPolicyId=self.GetGroupPolicyByName(self.objectmodele.GetGroupPolicy(VlanModele['groupPolicyId'])['name'])['groupPolicyId']
+                )
+
+    # Fonction pour ajouter une liste de vlans routés
+    def AddUniqueVlans(self,vlans,p_subnet_id, newnetwork):
+        self.ActiveVlan() # On vérifier que les vlans sont bien actif
+
+        # Si j'ai plus de 1 vlan et que mon réseau est nouveau on va créer un subnet parent (IPAM)
+        if len(vlans) > 1 and newnetwork:
+            all_subnet = 0
+            for vlan in vlans:
+                all_subnet += int(netaddr.IPNetwork(vlan['cidr']).size)
+
+            if all_subnet > 8:
+                cidr_all_subnet = "0.0.0.0/28"
+            if all_subnet > 16:
+                cidr_all_subnet = "0.0.0.0/27"
+            if all_subnet > 32:
+                cidr_all_subnet = "0.0.0.0/26"
+            if all_subnet > 64:
+                cidr_all_subnet = "0.0.0.0/25"
+            if all_subnet > 128:
+                cidr_all_subnet = "0.0.0.0/24"
+
+            # Création du subnet parent #
+            print("AVANT AJOUT SUBNET")
+            Ipam().add_subnet(
+                subnet_addr=Ipam().search_free_network(cidr_all_subnet,id=p_subnet_id),
+                subnet_name=self.networkDict['name'],
+                subnet_size=netaddr.IPNetwork(cidr_all_subnet).size,
+                parent_subnet_id=p_subnet_id,
+                is_terminal=0
+                )
+            # On récupère ses valeurs
+            p_subnet_id = Ipam().get_subnet(self.networkDict['name'])[0]['subnet_id']
+
+        subnets_vpn = []
+        routed_vlans =""
+
+        # On pousse la config site to site VPN avec tous les vlans
+        # Pour chaque vlan on fait appel a la fonction AddVlan
+        self.UpdateStsVpn(
+            mode = Network(os.environ["MERAKI_APIKEY"],"SODEXO - FRANCE","FR734305 - CONFIG SOURCE").GetStsVpn()['mode'],
+            hubs = Network(os.environ["MERAKI_APIKEY"],"SODEXO - FRANCE","FR734305 - CONFIG SOURCE").GetStsVpn()['hubs'],
+            subnets = subnets_vpn
+        )
+
+        for vlan in vlans:
+            self.AddVlan(
+                vlan['id'],
+                cidr_subnet=vlan['cidr'],
+                p_subnet=p_subnet_id,
+                )
+            # On récupère les informations du vlans sur meraki
+            getvlan = self.GetVlan(vlan['id'])
+
+            # On met en forme les informations pour chaque vlan dans "routed_vlans"
+            routed_vlans+="ID : "+str(getvlan["id"])+", Name : "+str(getvlan["name"])+", Subnet : "+str(getvlan["subnet"])+", Gateway : "+str(getvlan["applianceIp"])+"<br/>"
+
+            
+            # On met en forme les informations pour le site to site VPN
+            sub_vpn = {
+                "localSubnet": getvlan["subnet"],
+                "useVpn": True
+            }
+            subnets_vpn.append(sub_vpn)
+
+        self.UpdateStsVpn(
+            mode = Network(os.environ["MERAKI_APIKEY"],"SODEXO - FRANCE","FR734305 - CONFIG SOURCE").GetStsVpn()['mode'],
+            hubs = Network(os.environ["MERAKI_APIKEY"],"SODEXO - FRANCE","FR734305 - CONFIG SOURCE").GetStsVpn()['hubs'],
+            subnets = subnets_vpn
+        )
+
+        self.DeleteVlan(1) # On supprime le vlan "1" s'il existe
+
+        try: # On d'envoyer par email toutes les informations dans routed_vlans
+            send_mail(send_from='Meraki <dl.ce.fr-notification.meraki@sodexo.com>', send_to=['dl.ce.fr-network.support@sodexo.com','deploiement.sites.fr@sodexo.com','olivier.bayeux.ext@sodexo.com','david.lafoy@sodexo.com','benoit.boullen@sodexo.com','alain.gele@sodexo.com','corentin.limbos.ext@sodexo.com'], subject='Meraki Creation '+self.networkDict['name'], text=routed_vlans)
+        except:
+            pass
+
+
+    # Fonction pour mettre à jour un device
+    def UpdateDevices(self,serials,address):
+        # Pour chaque device on fait appel a la fonction UpdateDevice ( nom,  tags et l'adresse )
+        for serial in serials:
+                Devices(os.environ["MERAKI_APIKEY"],serial['serial']).UpdateDevice(
+                    name=serial['prefix']+"-"+self.networkDict['name'][9:]+"-"+self.networkDict['name'][:8],
+                    tags=['cost:'+serial['cost'],'sxo:'+self.networkDict['name'][:8],'addat:'+str(datetime.date.today())],
+                    address=address
+                    )
