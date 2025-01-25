@@ -1,0 +1,87 @@
+from library.lib_meraki import Organization, ModeleTemplate, Ipam, Network
+from django.contrib.auth.decorators import login_required
+from NetAutoApp.forms.addnetwork import ExistNetworkForm, DeviceFormset, IpamChoiceForm, VlanForm, SameVlanForm
+from NetAutoApp.models.network import Device
+import os
+import time
+import requests
+
+""" Fonction pour la views d'ajout sur un réseau'"""
+def add_to_network(request):
+
+    # Initialisation des informations (vlans et zone IPAM)
+   
+    list_vlans_modele = ModeleTemplate(os.environ["MERAKI_APIKEY"],"SODEXO - FRANCE","MODELE").vlans()
+   
+    list_uniquevlans_modele = [vlan for vlan in list_vlans_modele if vlan['templateVlanType'] == 'unique']
+   
+    list_samevlans_modele = [vlan for vlan in list_vlans_modele if vlan['templateVlanType'] != 'unique']
+    ipam_list = ((sub['subnet_id'], sub['start_hostaddr']+" - "+sub['subnet_name']) for sub in Ipam().get_subnet_level("1") if sub['subnet_name'] == "France-OSS_010-FR-HQU-PA3") #return none chercher pk
+
+    # Si la requete est en GET
+    if request.method == 'GET':
+            form = ExistNetworkForm(request.GET or None)
+            formset_devices = DeviceFormset(queryset=Device.objects.none())
+            formipam = IpamChoiceForm(ipam_list)
+            forms_vlans = VlanForm(list_uniquevlans_modele)
+            forms_samevlans = SameVlanForm(list_samevlans_modele)
+    # Sinon en POST
+    elif request.method == 'POST':
+     
+        form = ExistNetworkForm(request.POST)
+        formset_devices = DeviceFormset(request.POST)
+        formipam = IpamChoiceForm(ipam_list, data=request.POST)
+        forms_vlans = VlanForm(list_uniquevlans_modele, data=request.POST)
+        forms_samevlans = SameVlanForm(list_samevlans_modele, data=request.POST)
+            
+            # Mise en forme des valeurs récupérées
+        dict_post = {key: value for key, value in request.POST.dict().items() if value != ''}   
+        samevlans = [vlan['id'] for vlan in list_samevlans_modele if str(vlan['id']) in dict_post.keys()]
+            
+        uniquevlans = [{'id':vlan['id'],'cidr':dict_post[str(vlan['id'])]} for vlan in list_uniquevlans_modele if str(vlan['id']) in dict_post.keys()]
+
+        # Si les formulaires sont valid
+        if form.is_valid() and formset_devices.is_valid() and forms_vlans.is_valid() and formipam.is_valid() and forms_samevlans.is_valid():
+            print(form.cleaned_data)
+            print(formset_devices.cleaned_data)
+            print(formipam.cleaned_data)
+            print(uniquevlans)
+            print(samevlans)
+                
+                # On initialise la class Network avec le nom du réseau demandé
+           
+            objectnetwork = Network(os.environ["MERAKI_APIKEY"],"SODEXO - FRANCE",form.cleaned_data['network'])
+            objectnetwork.BaseConfig() # On lui réapplique la config de base
+
+                # Si le formset des devices n'est pas vide alors on claim la liste
+            if formset_devices.cleaned_data:
+               
+                list_serials = [device['serial'] for device in formset_devices.cleaned_data if device]
+               
+                objectnetwork.ClaimDevices(serials=list_serials)
+                
+                # Si la liste des vlans non routés n'est pas vide alors on la rajoute
+            if samevlans:
+               
+                objectnetwork.AddSameVlans(vlans=samevlans)
+                
+                
+                # Si la liste des vlans routés n'est pas vide alors on la rajoute
+            if uniquevlans:
+               
+                objectnetwork.AddUniqueVlans(vlans=uniquevlans,p_subnet_id=formipam.cleaned_data['choice_zone'], newnetwork=False)
+                    
+
+                # Si la liste des devices n'est pas vide alors on les met à jour
+            if formset_devices.cleaned_data: #Update des devices à la fin car l'url API n'existe pas encore quand ils viennent d'être rajouté à un network
+               
+                objectnetwork.UpdateDevices(serials=formset_devices.cleaned_data, address=form.cleaned_data['address'])
+ 
+
+    return render(request, 'NetAutoApp/gestion/add_to_network.html', {
+        'form' : form,
+        'formset_devices' : formset_devices,
+        'formipam' : formipam,
+        'forms_vlans' : forms_vlans,
+        'forms_samevlans' : forms_samevlans,
+    })
