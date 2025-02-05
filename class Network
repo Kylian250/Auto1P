@@ -273,7 +273,7 @@ class Network:
         self.DeleteVlan(1) # On supprime le vlan "1" s'il existe
 
         try: # On d'envoyer par email toutes les informations dans routed_vlans
-            send_mail(send_from='Meraki <dl.ce.fr-notification.meraki@sodexo.com>', send_to=['dl.ce.fr-network.support@sodexo.com','deploiement.sites.fr@sodexo.com','olivier.bayeux.ext@sodexo.com','david.lafoy@sodexo.com','benoit.boullen@sodexo.com','alain.gele@sodexo.com','corentin.limbos.ext@sodexo.com'], subject='Meraki Creation '+self.networkDict['name'], text=routed_vlans)
+            send_mail(******************)
         except:
             pass
 
