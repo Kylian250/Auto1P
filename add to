@@ -11,12 +11,12 @@ def add_to_network(request):
 
     # Initialisation des informations (vlans et zone IPAM)
    
-    list_vlans_modele = ModeleTemplate(os.environ["***"],"SODEXO - FRANCE","MODELE").vlans()
+    list_vlans_modele = ModeleTemplate(os.environ["***"],"*********","MODELE").vlans()
    
     list_uniquevlans_modele = [vlan for vlan in list_vlans_modele if vlan['templateVlanType'] == 'unique']
    
     list_samevlans_modele = [vlan for vlan in list_vlans_modele if vlan['templateVlanType'] != 'unique']
-    ipam_list = ((sub['subnet_id'], sub['start_hostaddr']+" - "+sub['subnet_name']) for sub in Ipam().get_subnet_level("1") if sub['subnet_name'] == "France-OSS_010-FR-HQU-PA3") #return none chercher pk
+    ipam_list = ((sub['subnet_id'], sub['start_hostaddr']+" - "+sub['subnet_name']) for sub in Ipam().get_subnet_level("1") if sub['subnet_name'] == "***********") #return none chercher pk
 
     # Si la requete est en GET
     if request.method == 'GET':
