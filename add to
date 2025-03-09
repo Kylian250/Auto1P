@@ -11,7 +11,7 @@ def add_to_network(request):
 
     # Initialisation des informations (vlans et zone IPAM)
    
-    list_vlans_modele = ModeleTemplate(os.environ["MERAKI_APIKEY"],"SODEXO - FRANCE","MODELE").vlans()
+    list_vlans_modele = ModeleTemplate(os.environ["***"],"SODEXO - FRANCE","MODELE").vlans()
    
     list_uniquevlans_modele = [vlan for vlan in list_vlans_modele if vlan['templateVlanType'] == 'unique']
    
@@ -50,7 +50,7 @@ def add_to_network(request):
                 
                 # On initialise la class Network avec le nom du réseau demandé
            
-            objectnetwork = Network(os.environ["MERAKI_APIKEY"],"SODEXO - FRANCE",form.cleaned_data['network'])
+            objectnetwork = Network(os.environ["***"],"SODEXO",form.cleaned_data['network'])
             objectnetwork.BaseConfig() # On lui réapplique la config de base
 
                 # Si le formset des devices n'est pas vide alors on claim la liste
